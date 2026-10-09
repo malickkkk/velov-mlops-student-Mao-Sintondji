@@ -1,7 +1,8 @@
-# Dépendances de développement et d'entraînement (jamais dans l'image de serving).
--r requirements.txt
-pytest==9.1.1
-httpx==0.28.1
-httpx2==2.13.1
-ruff==0.16.9
-mlflow==3.16.1
+# Runtime dependencies for the Velov app
+numpy>=1.26
+pandas>=2.2
+scikit-learn>=1.5
+joblib>=1.4
+fastapi>=0.115
+uvicorn>=0.30
+pydantic>=2.7
