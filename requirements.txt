@@ -1,10 +1,7 @@
-# Dépendances de SERVING uniquement (ce qui part dans l'image Docker).
-# Versions épinglées : le modèle doit être servi avec les versions qui l'ont entraîné
-# (un pickle scikit-learn n'est pas garanti entre deux versions mineures).
-fastapi==0.142.2
-uvicorn[standard]==0.46.0
-pydantic==2.13.5
-scikit-learn==1.9.1
-pandas==3.0.2
-numpy==2.4.6
-joblib==1.5.3
+# Dépendances de développement et d'entraînement (jamais dans l'image de serving).
+-r requirements.txt
+pytest==9.1.1
+httpx==0.28.1
+httpx2==2.13.1
+ruff==0.16.9
+mlflow==3.16.1
