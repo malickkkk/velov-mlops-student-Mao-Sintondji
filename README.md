@@ -36,6 +36,42 @@ pytest                               # tests
 uvicorn velov.api.main:app --reload  # API sur http://127.0.0.1:8000/docs (--reload : en dev uniquement)
 ```
 
+Avec Docker Compose, l'API et PostgreSQL démarrent ensemble :
+
+```bash
+MODEL_VERSION=1.0.0 \
+GIT_COMMIT="$(git rev-parse --short HEAD)" \
+docker compose up --build
+```
+
+Chaque appel à `/v1/predict` est enregistré dans la table PostgreSQL `predictions`.
+L'image API est alors taguée `velov-api:1.0.0-<commit-court>`. Le même numéro de
+version et le même commit sont aussi présents dans les labels OCI de l'image.
+Pour vérifier une prédiction enregistrée :
+
+```bash
+docker compose exec db psql -U velov -d velov -c \
+  "SELECT station_id, input_timestamp, target_timestamp, predicted_bikes, model_version
+   FROM predictions ORDER BY id DESC LIMIT 10;"
+```
+
+Pour vérifier le tag et les labels :
+
+```bash
+docker image ls 'velov-api'
+docker image inspect "velov-api:1.0.0-$(git rev-parse --short HEAD)" \
+  --format '{{.Config.Labels}}'
+```
+
+Pour vérifier la persistance après redémarrage :
+
+```bash
+docker compose down
+docker compose up -d
+docker compose exec db psql -U velov -d velov -c \
+  "SELECT COUNT(*) AS predictions FROM predictions;"
+```
+
 Exemple d'appel :
 
 ```bash

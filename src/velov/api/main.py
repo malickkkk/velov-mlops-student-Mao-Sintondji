@@ -30,6 +30,7 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import psycopg
 from fastapi import FastAPI, HTTPException, Request
 
 from velov.api.schemas import (
@@ -45,7 +46,11 @@ logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(
 logger = logging.getLogger("velov.api")
 
 # État du service, rempli au démarrage.
-STATE: dict = {"model": None, "metadata": None}
+STATE: dict = {
+    "model": None,
+    "metadata": None,
+    "database": None,
+}
 
 
 def load_model(model_dir: Path) -> tuple[object, dict]:
@@ -62,7 +67,45 @@ def load_model(model_dir: Path) -> tuple[object, dict]:
     actual = sha256_of(model_path)
     if actual != metadata["artifact"]["sha256"]:
         raise RuntimeError(f"Empreinte invalide pour {model_path} : artefact modifié ou corrompu")
-    return joblib.load(model_path), metadata
+    artifact = joblib.load(model_path)
+    if isinstance(artifact, dict):
+        if "model" not in artifact:
+            raise RuntimeError(f"Artefact invalide pour {model_path} : clé 'model' absente")
+        artifact = artifact["model"]
+    if not hasattr(artifact, "predict"):
+        raise RuntimeError(f"Artefact invalide pour {model_path} : méthode predict absente")
+    return artifact, metadata
+
+
+def initialize_database() -> psycopg.Connection | None:
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        logger.info("DATABASE_URL absent : persistance désactivée")
+        return None
+
+    connection_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    connection = psycopg.connect(connection_url)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS predictions (
+                id BIGSERIAL PRIMARY KEY,
+                station_id INTEGER NOT NULL,
+                input_timestamp TIMESTAMPTZ NOT NULL,
+                capacity INTEGER NOT NULL,
+                bikes_available INTEGER NOT NULL,
+                temperature DOUBLE PRECISION NOT NULL,
+                is_raining BOOLEAN NOT NULL,
+                target_timestamp TIMESTAMPTZ NOT NULL,
+                predicted_bikes DOUBLE PRECISION NOT NULL,
+                model_version VARCHAR(100) NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+            """
+        )
+    connection.commit()
+    logger.info("Base PostgreSQL initialisée")
+    return connection
 
 
 @asynccontextmanager
@@ -75,8 +118,16 @@ async def lifespan(app: FastAPI):
         # Le process démarre quand même : /health répond, /ready signale le problème.
         logger.exception("Échec du chargement du modèle depuis %s", model_dir)
 
+    try:
+        STATE["database"] = initialize_database()
+    except Exception:
+        logger.exception("Échec de l'initialisation de PostgreSQL")
+
     yield
+    if STATE["database"] is not None:
+        STATE["database"].close()
     STATE.update(model=None, metadata=None)
+    STATE["database"] = None
 
 
 app = FastAPI(
@@ -114,6 +165,50 @@ def model_info() -> dict:
     return STATE["metadata"]
 
 
+def save_prediction(item: PredictionRequest, prediction: PredictionResponse) -> None:
+    if not os.getenv("DATABASE_URL"):
+        return
+
+    connection = STATE["database"]
+    if connection is None:
+        raise HTTPException(status_code=503, detail="Base de données non disponible")
+
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                INSERT INTO predictions (
+                    station_id,
+                    input_timestamp,
+                    capacity,
+                    bikes_available,
+                    temperature,
+                    is_raining,
+                    target_timestamp,
+                    predicted_bikes,
+                    model_version
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    item.station_id,
+                    item.timestamp,
+                    item.capacity,
+                    item.bikes_available,
+                    item.temperature,
+                    item.is_raining,
+                    prediction.target_timestamp,
+                    prediction.predicted_bikes,
+                    prediction.model_version,
+                ),
+            )
+        connection.commit()
+    except Exception as exc:
+        connection.rollback()
+        logger.exception("Échec de l'enregistrement de la prédiction")
+        raise HTTPException(status_code=503, detail="Échec de l'enregistrement en base") from exc
+
+
 def _predict(items: list[PredictionRequest]) -> list[PredictionResponse]:
     if STATE["model"] is None:
         raise HTTPException(status_code=503, detail="Modèle non chargé")
@@ -121,7 +216,7 @@ def _predict(items: list[PredictionRequest]) -> list[PredictionResponse]:
     features = add_features(raw)[FEATURES]  # même fonction qu'à l'entraînement
     preds = np.clip(STATE["model"].predict(features), 0, raw["capacity"].to_numpy())
     version = STATE["metadata"]["model_version"]
-    return [
+    predictions = [
         PredictionResponse(
             station_id=item.station_id,
             target_timestamp=item.timestamp + timedelta(hours=1),
@@ -130,6 +225,9 @@ def _predict(items: list[PredictionRequest]) -> list[PredictionResponse]:
         )
         for item, p in zip(items, preds, strict=True)
     ]
+    for item, prediction in zip(items, predictions, strict=True):
+        save_prediction(item, prediction)
+    return predictions
 
 
 @app.post("/v1/predict", response_model=PredictionResponse, tags=["model"])
