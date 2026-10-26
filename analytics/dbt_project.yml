@@ -1,0 +1,15 @@
+name: velov_analytics
+version: "1.0.0"
+config-version: 2
+
+profile: velov_analytics
+
+model-paths: ["models"]
+test-paths: ["tests"]
+
+models:
+  velov_analytics:
+    silver:
+      +materialized: table
+    gold:
+      +materialized: table

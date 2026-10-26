@@ -44,6 +44,29 @@ GIT_COMMIT="$(git rev-parse --short HEAD)" \
 docker compose up --build
 ```
 
+### Pipeline Bronze / Silver / Gold (S3)
+
+Le même PostgreSQL héberge aussi le pipeline analytique dbt :
+
+```bash
+python -m velov.data --days 90 --stations 20 --out data/velov_history.csv
+python scripts/ingest_bronze.py
+cd analytics
+dbt run --profiles-dir .
+dbt test --profiles-dir .
+# optionnel : entraîner depuis la Gold après validation Pandera
+cd ..
+python -m velov.train --gold-database-url postgresql://velov:secret@localhost:5432/velov --out models
+```
+
+`scripts/ingest_bronze.py` charge les observations brutes dans
+`bronze.velov_history` avec une clé `(station_id, timestamp)` et `ON CONFLICT DO NOTHING`.
+Deux exécutions successives ne créent donc aucun doublon. Le modèle Silver
+`stg_velov_history` nettoie et filtre les valeurs invalides. Le modèle Gold
+`fct_velov_availability` ajoute la cible à H+1, utilisée par l'entraînement.
+Les contrats dbt et les tests `not_null`, `relationships` et de capacité vérifient
+la qualité de ces deux modèles.
+
 Chaque appel à `/v1/predict` est enregistré dans la table PostgreSQL `predictions`.
 L'image API est alors taguée `velov-api:1.0.0-<commit-court>`. Le même numéro de
 version et le même commit sont aussi présents dans les labels OCI de l'image.

@@ -1,0 +1,12 @@
+velov_analytics:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_HOST', 'localhost') }}"
+      port: 5432
+      user: "{{ env_var('DBT_USER', 'velov') }}"
+      password: "{{ env_var('DBT_PASSWORD', 'secret') }}"
+      dbname: "{{ env_var('DBT_DATABASE', 'velov') }}"
+      schema: "{{ env_var('DBT_SCHEMA', 'analytics') }}"
+      threads: 2

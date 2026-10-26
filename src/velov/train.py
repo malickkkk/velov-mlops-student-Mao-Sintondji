@@ -23,6 +23,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import sklearn
+from pandera.pandas import Check, Column, DataFrameSchema
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error
@@ -35,6 +36,7 @@ from velov.features import (
     NUMERIC_FEATURES,
     RAW_COLUMNS,
     TARGET,
+    add_features,
     make_training_frame,
 )
 
@@ -72,19 +74,74 @@ def temporal_split(df: pd.DataFrame, test_days: int) -> tuple[pd.DataFrame, pd.D
     return train, test
 
 
+def load_gold_data(database_url: str) -> pd.DataFrame:
+    """Read and validate the dbt Gold contract before training."""
+    import psycopg
+
+    url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
+    with psycopg.connect(url) as connection:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                select station_id, timestamp, capacity, bikes_available,
+                       temperature, is_raining, target_timestamp, target_bikes_available
+                from analytics.fct_velov_availability
+                """
+            )
+            frame = pd.DataFrame(
+                cursor.fetchall(),
+                columns=[
+                    "station_id",
+                    "timestamp",
+                    "capacity",
+                    "bikes_available",
+                    "temperature",
+                    "is_raining",
+                    "target_timestamp",
+                    "target_bikes_available",
+                ],
+            )
+    schema = DataFrameSchema(
+        {
+            "station_id": Column(int, Check.ge(1)),
+            "timestamp": Column(nullable=False),
+            "capacity": Column(int, Check.gt(0)),
+            "bikes_available": Column(int, Check.in_range(0, 100000)),
+            "temperature": Column(float),
+            "is_raining": Column(bool),
+            "target_timestamp": Column(nullable=False),
+            "target_bikes_available": Column(int, Check.ge(0)),
+        },
+        checks=Check(
+            lambda data: (data["bikes_available"] <= data["capacity"]).all()
+            and (data["target_bikes_available"] <= data["capacity"]).all(),
+            error="availability must not exceed capacity",
+        ),
+    )
+    schema.validate(frame, lazy=True)
+    frame["timestamp"] = pd.to_datetime(frame["timestamp"], utc=True)
+    frame["bikes_next_hour"] = frame["target_bikes_available"]
+    return frame
+
+
 def train(
     data_path: Path,
     out_dir: Path,
     version: str = "0.1.0",
     test_days: int = 14,
     seed: int = 42,
+    gold_database_url: str | None = None,
 ) -> dict:
     """Entraîne, évalue contre une baseline, écrit l'artefact. Retourne les métadonnées."""
-    if not data_path.exists():
+    if gold_database_url:
+        raw = load_gold_data(gold_database_url)
+        frame = add_features(raw)
+        frame[TARGET] = raw["target_bikes_available"]
+    elif not data_path.exists():
         raise FileNotFoundError(f"{data_path} introuvable : lancer d'abord `python -m velov.data`")
-
-    raw = pd.read_csv(data_path, parse_dates=["timestamp"])
-    frame = make_training_frame(raw)
+    else:
+        raw = pd.read_csv(data_path, parse_dates=["timestamp"])
+        frame = make_training_frame(raw)
     train_df, test_df = temporal_split(frame, test_days)
 
     pipeline = build_pipeline(seed)
@@ -117,7 +174,7 @@ def train(
             "n_test": int(len(test_df)),
         },
         "artifact": {"file": MODEL_FILENAME, "sha256": sha256_of(model_path)},
-        "data_sha256": sha256_of(data_path),
+        "data_sha256": sha256_of(data_path) if data_path.exists() else None,
         "runtime": {
             "python": platform.python_version(),
             "scikit-learn": sklearn.__version__,
@@ -171,9 +228,10 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("models"))
     parser.add_argument("--version", default="0.1.0")
     parser.add_argument("--mlflow", action="store_true", help="journaliser aussi dans MLflow")
+    parser.add_argument("--gold-database-url", help="entraîner depuis analytics.fct_velov_availability")
     args = parser.parse_args()
 
-    metadata = train(args.data, args.out, version=args.version)
+    metadata = train(args.data, args.out, version=args.version, gold_database_url=args.gold_database_url)
     m = metadata["metrics"]
     print(f"MAE modèle   : {m['mae_model']:.3f} vélos")
     print(f"MAE baseline : {m['mae_baseline_persistence']:.3f} vélos (persistance)")

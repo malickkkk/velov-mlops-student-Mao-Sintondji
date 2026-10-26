@@ -1,0 +1,76 @@
+version: 2
+
+models:
+  - name: stg_velov_history
+    description: "Silver: observations nettoyees et conformes au contrat."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: station_id
+        data_type: integer
+        tests:
+          - not_null
+      - name: timestamp
+        data_type: timestamptz
+        tests:
+          - not_null
+      - name: capacity
+        data_type: integer
+        tests:
+          - not_null
+      - name: bikes_available
+        data_type: integer
+        tests:
+          - not_null
+      - name: temperature
+        data_type: double precision
+        tests:
+          - not_null
+      - name: is_raining
+        data_type: boolean
+        tests:
+          - not_null
+
+  - name: fct_velov_availability
+    description: "Gold: une observation par station avec la cible a H+1."
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: station_id
+        data_type: integer
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_velov_history')
+                field: station_id
+      - name: timestamp
+        data_type: timestamptz
+        tests:
+          - not_null
+      - name: capacity
+        data_type: integer
+        tests:
+          - not_null
+      - name: bikes_available
+        data_type: integer
+        tests:
+          - not_null
+      - name: temperature
+        data_type: double precision
+        tests:
+          - not_null
+      - name: is_raining
+        data_type: boolean
+        tests:
+          - not_null
+      - name: target_timestamp
+        data_type: timestamptz
+        tests:
+          - not_null
+      - name: target_bikes_available
+        data_type: integer
+        tests:
+          - not_null

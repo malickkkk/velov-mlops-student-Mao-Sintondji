@@ -11,6 +11,8 @@ models/*
 !models/.gitkeep
 mlflow.db
 mlruns/
+target/
+logs/
 
 # Secrets
 .env
